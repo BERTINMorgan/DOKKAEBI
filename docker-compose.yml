@@ -1,0 +1,71 @@
+# DOKKÆBI — stack 100 % locale (mini PC embarqué du van).
+# Rien n'est exposé sur Internet : ports publiés sur le LAN du van uniquement,
+# accès distant via VPN (WireGuard/Tailscale) sur le mini PC, jamais de reverse-proxy public.
+#
+# Préchargement offline (à faire UNE fois avec Internet, à l'atelier) :
+#   docker compose pull && docker compose build
+# Ensuite, dans le van (mode avion OK) :
+#   docker compose up -d
+name: dokkaebi
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqtt-data:/mosquitto/data
+    ports:
+      - "1883:1883"  # LAN van uniquement — bloquer au firewall si 2e interface réseau
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      MQTT_HOST: mosquitto
+      DB_PATH: /data/dokkaebi.db
+      PHOTOS_DIR: /data/photos
+      # IP fixes des 4 ESP32-CAM sur le WiFi du van (firmware CameraWebServer -> /stream) :
+      CAM1_URL: http://192.168.10.11/stream
+      CAM2_URL: http://192.168.10.12/stream
+      CAM3_URL: http://192.168.10.13/stream
+      CAM4_URL: http://192.168.10.14/stream
+    volumes:
+      - dokkaebi-data:/data
+    expose:
+      - "8000"
+    depends_on:
+      - mosquitto
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    ports:
+      - "8080:80"  # UI : http://<ip-mini-pc>:8080 depuis le WiFi du van
+    depends_on:
+      - backend
+
+  nas:
+    # NAS sur le même volume que la base SQLite + photos (arborescence : /data/{dokkaebi.db, photos/, box/ATA-XX/})
+    image: dperson/samba
+    restart: unless-stopped
+    command: ["-u", "dokkaebi;dokkaebi", "-s", "dokkaebi;/data;yes;no;no;no;dokkaebi;dokkaebi"]
+    volumes:
+      - dokkaebi-data:/data
+    ports:
+      - "139:139"
+      - "445:445"
+
+  # Simulateur de capteurs pour démo/test SANS matériel :
+  #   docker compose --profile sim up -d sim
+  sim:
+    profiles: ["sim"]
+    build: ./tools
+    environment:
+      MQTT_HOST: mosquitto
+    depends_on: [mosquitto, backend]
+    restart: "no"
+
+volumes:
+  dokkaebi-data:
+  mqtt-data:
